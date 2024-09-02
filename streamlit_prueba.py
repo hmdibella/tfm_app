@@ -13,17 +13,20 @@ from langchain_huggingface import HuggingFaceEmbeddings
 import time
 import logging
 import configparser
+import warnings
+
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 HUGGINGFACEHUB_API_TOKEN = ""
 GOOGLE_API_KEY = ""
-MODEL_EMBEDDINGS_OLLAMA = ""
-MODEL_EMBEDDINGS_GOOGLE = ""
-OUTPUT_PATH = ""
-FAISS_GOOGLE_PATH = ""
-FAISS_OLLAMA_PATH = ""
-LOG_PATH = ""
-NUMEXPR_MAX_THREADS = ""
+MODEL_EMBEDDINGS_OLLAMA = "paraphrase-xlm-r-multilingual-v1"
+MODEL_EMBEDDINGS_GOOGLE = "models/embedding-001"
+OUTPUT_PATH = "output"
+FAISS_GOOGLE_PATH = "output/faiss_index_google"
+FAISS_OLLAMA_PATH = "output/faiss_index"
+NUMEXPR_MAX_THREADS = "16"
 
 
 def load_config():
@@ -67,7 +70,6 @@ ALWAYS make sure that all answers are accurate, self-contained, and relevant, wi
 
 Context:
 {context}
-{prev_conv}
 
 Question:
 {question}
@@ -135,16 +137,16 @@ Answer:
     return chain
 
 
-def user_input_ollama(user_question, model_name1, prev_conv):
-    embeddings = HuggingFaceEmbeddings(model_name=model_embeddings_ollama)
-    new_db = FAISS.load_local(FAISS_OLLAMA_PATH, embeddings, allow_dangerous_deserialization=True)
-    docs = new_db.similarity_search(user_question)
+def user_input_ollama(user_question, model_name1, prev_conv, chunk_size, k_value):
+    embeddings = HuggingFaceEmbeddings(model_name=MODEL_EMBEDDINGS_OLLAMA)
+    new_db = FAISS.load_local(FAISS_OLLAMA_PATH + "_" + chunk_size, embeddings, allow_dangerous_deserialization=True)
+    docs = new_db.similarity_search(user_question, k=int(k_value))
     chain = get_conversational_chain_ollama(model_name1)
     response = chain.run({"context": docs, "question": user_question, "prev_conv": prev_conv})
     return response
     
     
-def user_input_google(user_question, prev_conv):
+def user_input_google(user_question, prev_conv, chunk_size, k_value):
     embeddings = GoogleGenerativeAIEmbeddings(model = MODEL_EMBEDDINGS_GOOGLE)
     new_db = FAISS.load_local(FAISS_GOOGLE_PATH, embeddings, allow_dangerous_deserialization=True)
     docs = new_db.similarity_search(user_question)
@@ -154,14 +156,14 @@ def user_input_google(user_question, prev_conv):
     return response["output_text"]
     
     
-def response_generator(prompt, model_name, prev_conv):
+def response_generator(prompt, model_name, prev_conv, chunk_size, k_value):
     start_model_exec = time.time()
     if model_name.startswith('Gemini'):
-        response = user_input_google(prompt, prev_conv)
+        response = user_input_google(prompt, prev_conv, chunk_size, k_value)
     else:
-        response = user_input_ollama(prompt, model_name, prev_conv)
+        response = user_input_ollama(prompt, model_name, prev_conv, chunk_size, k_value)
     end_model_exec = time.time()
-    resp_text = "{0}: {1}\n\n(Tiempo de respuesta: {2:.2f} segundos).".format(model_name, response, end_model_exec - start_model_exec)
+    resp_text = "{0} - {3} - {4}: {1}\n\n(Tiempo de respuesta: {2:.2f} seg.).".format(model_name, response, end_model_exec - start_model_exec, chunk_size, k_value)
     for word in resp_text.split():
         yield word + " "
         time.sleep(0.05)
@@ -194,6 +196,15 @@ def main():
         'gemma2:9b-instruct-q8_0',
         'Gemini-pro'],
         index=0 )
+        
+    chunk_size = st.sidebar.selectbox( 'Elije un chunk size', [
+        '10000', 
+        '5000', 
+        '2000',
+        '1000'],
+        index=0 )
+        
+    k_value = st.sidebar.number_input( "Inserta el valor de k", value=1, placeholder="Ingresa un entero...", min_value=1, format="%d")
     
     st.header("Chat con el modelo", divider="gray")
   
@@ -224,7 +235,8 @@ def main():
             
             # Display assistant response in chat message container
             with st.chat_message("assistant"):
-                response = st.write_stream(response_generator(prompt, model_chat, st.session_state.context))
+                #response = st.write_stream(response_generator(prompt, model_chat, st.session_state.context, chunk_size, k_value))
+                response = st.write_stream(response_generator(prompt, model_chat, "", chunk_size, k_value))
 
             # Add assistant response to chat history
             st.session_state.messages.append({"role": "assistant", "content": response})

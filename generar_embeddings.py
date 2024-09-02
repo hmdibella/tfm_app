@@ -106,7 +106,7 @@ def get_vector_store_google(text_chunks):
 def get_vector_store_ollama(text_chunks):
     embeddings = HuggingFaceEmbeddings(model_name=MODEL_EMBEDDINGS_OLLAMA)
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-    vector_store.save_local(FAISS_OLLAMA_PATH)
+    vector_store.save_local(FAISS_OLLAMA_PATH + "_" + CHUNK_SIZE )
     
     
 def main():
