@@ -21,28 +21,27 @@ from langchain_community.chat_message_histories import StreamlitChatMessageHisto
 
 
 GOOGLE_API_KEY = ""
-MODEL_EMBEDDINGS_GOOGLE = "models/embedding-001"
+MODEL_EMBEDDINGS_GOOGLE = "paraphrase-multilingual-MiniLM-L12-v2"
 MODEL_LLM_GOOGLE = "gemini-1.5-pro"
 OUTPUT_PATH = "output"
-FAISS_GOOGLE_PATH = "output/faiss_index_ollama"
+FAISS_GOOGLE_PATH = "output/faiss_index"
 NUMEXPR_MAX_THREADS = "16"
+K_VALUE = "8"
 
-CONTEXTUALIZE_Q_SYSTEM_PROMPT = """Given a chat history and the latest user question which might reference context in the chat history, formulate a standalone question which can be understood without the chat history. Do NOT answer the question, just reformulate it if needed and otherwise return it as is."""
+CONTEXTUALIZE_Q_SYSTEM_PROMPT = """Dado un historial de chat y la última pregunta del usuario que podría referenciar contexto en dicho historial, reformula la pregunta para que sea independiente y comprensible sin necesidad de acceder al historial. No respondas la pregunta; solo reformúlala si es necesario, o devuélvela tal como está si ya es clara.
+"""
 
-PROMPT_TEMPLATE_GOOGLE = """You are an intelligent assistant. Answer the question based solely on the information provided in the context, specific for Spain.
-Do not add any information beyond what is given. 
-If the context does not contain the answer, respond with: "The answer is not available in the provided context."
-Be concise and accurate. All the answers must be in Spanish language from Spain, in an informal manner.
-Answers must be clear, precise, and unambiguous, and a teenager should be able to understand the answer.
-Explicitly avoid phrases such as "según el documento", "según el capítulo", "en el texto", "como se menciona en el artículo", or any implication of external texts. Do not construct questions that require knowledge of the structure of the document or the location of information in it.
-Include the content-specific information that supports the answer to allow the answer to be independent of any external text.
-If the content lacks sufficient information to form a complete answer, do not force one.
-Create the answers in your own words; Direct copying of content is not permitted.
-NEVER mention the words "documento", "texto", "presentación", "archivo", "tabla", "artículo", "ley", "capítulo", "preámbulo", "título preliminar", "disposición" or "disposiciones generales" in your questions or answers.
-ALWAYS make sure that all answers are accurate, self-contained, and relevant, without relying on any original document or text or implying its existence, strictly avoiding any invention or speculation.
-IMPORTANT: if in the question there is no mention of a Comunidad Autonoma or the name of a city or province, try that the answer applies to Spain as a country.
+PROMPT_TEMPLATE_GOOGLE = """Eres un asistente inteligente. Responde a la pregunta basándote únicamente en la información 
+proporcionada en el contexto, específico para España.
+Siempre prioriza mencionar artículos o leyes que estén directamente relacionados con la pregunta del usuario.
+Si el contexto no contiene la respuesta, responde diciendo que la respuesta no está disponible en el contexto proporcionado, pidiendo disculpas, aclarando que solo puedes responder sobre el Código de Tráfico y Seguridad Vial de España. Intenta buscar la respuesta en el buscador de Google en este caso y dar una respuesya basado en la búsqueda y el mejor resultado de la misma.
+Si la pregunta se refiere a un tema legal, intenta identificar y citar el artículo de la ley que aplique.
+Genera las respuestas con tus propias palabras, sin copiar directamente el contenido, y asegúrate de que sean claras, fáciles de entender y aplicables a un público juvenil.
+Por ejemplo, si la respuesta incluyera el Artículo 48, responde con su título así "Artículo 48. Velocidades máximas en vías fuera de poblado." seguido del código del BOE correspondiente, dentro de la explicación.
+Siempre aclara que tus respuestas no deben ser tomadas para toma de decisiones y se debe consultar siempre con un experto.
+Finalmente, pregúntale al usuario si has respondido la pregunta. En caso que la respuesta sea afirmativa, agradécele por confirmar; en caso que la respuesta sea negativa, intenta explicarlo con otras palabras e intentando explayarte un poco más, o intentando resumir la respuesta si esta ha sido extensa.
 
-Context:
+Contexto:
 {context}
 """
 
@@ -54,6 +53,7 @@ def load_config():
     global FAISS_GOOGLE_PATH
     global LOG_PATH
     global NUMEXPR_MAX_THREADS
+    global K_VALUE
     
     config = configparser.ConfigParser()
     config.read('streamlit_google_history_final.ini')
@@ -64,6 +64,7 @@ def load_config():
     FAISS_GOOGLE_PATH = config['DEFAULT']['faiss_google_path']
     NUMEXPR_MAX_THREADS = config['DEFAULT']['numexpr_max_threads']
     LOG_PATH = config['DEFAULT']['log_path']
+    K_VALUE = config['MODELS']['k_value']
 
 
 def get_conversational_chain(retriever, session_id):
@@ -105,11 +106,10 @@ def get_conversational_chain(retriever, session_id):
     return conversational_rag_chain
 
 
-def user_input(user_question, k_value, session_id):
-    #embeddings = GoogleGenerativeAIEmbeddings(model = MODEL_EMBEDDINGS_GOOGLE, task_type="retrieval_document")
-    embeddings = HuggingFaceEmbeddings(model_name="paraphrase-xlm-r-multilingual-v1")
+def user_input(user_question, session_id):
+    embeddings = HuggingFaceEmbeddings(model_name=MODEL_EMBEDDINGS_GOOGLE)
     new_db = FAISS.load_local(FAISS_GOOGLE_PATH, embeddings, allow_dangerous_deserialization=True)
-    retriever = new_db.as_retriever(search_kwargs={"k": k_value})
+    retriever = new_db.as_retriever(search_kwargs={"k": int(K_VALUE)})
     chain = get_conversational_chain(retriever, session_id)
     response = chain.invoke(
         {"input": user_question},
@@ -120,20 +120,41 @@ def user_input(user_question, k_value, session_id):
     return response
     
     
-def response_generator(prompt, k_value, session_id, logger):
+def response_generator(prompt, session_id, logger):
     start_model_exec = time.time()
-    response = user_input(prompt, k_value, session_id)
+    response = user_input(prompt, session_id)
     end_model_exec = time.time()
-    resp_text = "{0} (Tiempo de respuesta: {1:.2f} seg. Session ID: {2}).".format(response["answer"], end_model_exec - start_model_exec,  session_id)
+    resp_text = "{0} *(Tiempo de respuesta: {1:.2f} seg.)*.".format(response["answer"], end_model_exec - start_model_exec)
     logger.debug(session_id + ' - Contexto ' + str(response) )
-    for word in resp_text.split():
+    for word in resp_text.split(" "):
         yield word + " "
         time.sleep(0.05)
 
 
+def response_generator_bot(text):
+    for word in text.split(" "):
+        yield word + " "
+        time.sleep(0.05)
+        
+        
+def create_new_chat():
+    st.session_state["chats_count"] += 1
+    st.session_state["history_chats"] = st.session_state["history_chats"] + ["Chat " + str(st.session_state["chats_count"])]
+    st.session_state["current_chat_index"] = st.session_state["chats_count"]-1
+
+
 def main():
 
-    st.set_page_config(page_title="Chat legal v1.0", page_icon="🇪🇸")
+    st.set_page_config(page_title="Semaforín v1.0", page_icon="🤖", layout="wide")
+    st.markdown("""
+<style>
+    .st-emotion-cache-1c7y2kd {
+        flex-direction: row-reverse;
+        text-align: right;
+    }
+</style>""",
+    unsafe_allow_html=True,
+)
     
     warnings.filterwarnings("ignore", category=FutureWarning)
     load_config()
@@ -146,51 +167,67 @@ def main():
     format='%(asctime)s.%(msecs)03d %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     
     # Initialization
-    if 'session_id' not in st.session_state:
-        st.session_state['session_id'] = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-  
-    k_value = st.sidebar.number_input( "Inserta el valor de k", value=16, placeholder="Ingresa un entero...", min_value=1, format="%d")
-    nombre = st.sidebar.text_input( "Inserta tu nombre", value="", placeholder="Ingresa un texto...", max_chars=50)
+    if "current_chat_index" not in st.session_state:
+        st.session_state["current_chat_index"] = 0
+        st.session_state["chats_count"] = 1
+        st.session_state["history_chats"] = ["Chat 1"]
     
-    st.header("Chat con el modelo", divider="gray")
+    session = "session_id" + str(st.session_state["current_chat_index"])
+    messages = "messages" + str(st.session_state["current_chat_index"])
+    if session not in st.session_state:
+        st.session_state[session] = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        st.session_state[messages] = []
+        st.session_state[messages].append({"role": "Semaforín", "content": "Hola! 👋 Soy Semaforín 🤖, tu colega-bot que responde preguntas ❓ sobre las leyes de Tráfico y Seguridad Vial 🚗 en España. Hazme las preguntas y yo trataré de responderlas 💪."})
+        
   
-    # Initialize chat history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    with st.sidebar:
+        st.title("Semaforín v1.0")
+        st.subheader( "Bienvenida/o a Semaforín v1.0! El primer colega-bot que responde sobre las leyes del Código de Tráfico y Seguridad Vial de España." )
+        current_chat = st.radio(
+            label="Lista de chats",
+            options=st.session_state["history_chats"],
+            #index=st.session_state["current_chat_index"],
+            key="chat_radiobutton"
+        )
+        if current_chat:
+            st.session_state["current_chat_index"] = st.session_state["history_chats"].index(current_chat)
+                
+        create_chat_button = st.button("Nuevo chat", use_container_width=True, key="create_chat_button")
+        if create_chat_button:
+            create_new_chat()
+            st.rerun()
     
-    # Inicializar el contexto de la conversación
-    if "context" not in st.session_state:
-        st.session_state.context = ""
+    avatar_assistant = 'https://raw.githubusercontent.com/hmdibella/tfm_app/main/perfil_bot.jpg'
+    avatar_user = 'https://raw.githubusercontent.com/hmdibella/tfm_app/main/perfil_humano.jpg'
     
     # Display chat messages from history on app rerun
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
+    current_state = st.session_state["messages"+str(st.session_state["current_chat_index"])]
+    for message in current_state:
+        avatar_img = avatar_assistant if message["role"] == "Semaforín" else avatar_user
+        with st.chat_message(message["role"], avatar=avatar_img):
             st.markdown(message["content"])
+            
   
     # Accept user input
-    if prompt := st.chat_input("Haz una pregunta sobre el Código de Tráfico y Seguridad Vial en España"):
+    if prompt := st.chat_input("Haz la pregunta aquí"):
         # Add user message to chat history
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        current_state.append({"role": "user", "content": prompt})
         # Display user message in chat message container
-        with st.chat_message("user"):
+        with st.chat_message("user", avatar=avatar_user):
             st.markdown(prompt)
             
-        logger.info(st.session_state['session_id'] + ' - Pregunta nueva de ' + nombre +': ' + prompt )
+        session = 'session_id'+str(st.session_state["current_chat_index"])
+        logger.info(st.session_state[session] + ' - Pregunta nueva: ' + prompt )
 
         with st.spinner("Procesando, por favor espere..."):
             
             # Display assistant response in chat message container
-            with st.chat_message("assistant"):
-                #response = st.write_stream(response_generator(prompt, model_chat, st.session_state.context, chunk_size, k_value))
-                response = st.write_stream(response_generator(prompt, k_value, st.session_state['session_id'], logger))
+            with st.chat_message("Semaforín", avatar=avatar_assistant):
+                response = st.write_stream(response_generator(prompt, st.session_state[session], logger))
 
             # Add assistant response to chat history
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            logger.info(st.session_state['session_id'] + ' - Respuesta: ' + response )
-            
-            # Agregar la pregunta y la respuesta al contexto
-            st.session_state.context += f"Pregunta: {prompt}\n"
-            st.session_state.context += f"Respuesta: {response}\n"
+            current_state.append({"role": "Semaforín", "content": response})
+            logger.info(st.session_state[session] + ' - Respuesta: ' + response )
 
   
 if __name__ == "__main__":
